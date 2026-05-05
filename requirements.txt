@@ -1,0 +1,45 @@
+# ---- Core data ----
+yfinance>=0.2.40
+pandas>=2.1.0
+numpy>=1.26.0
+pyarrow>=15.0.0           # Parquet IO
+
+# ---- HTTP / scraping ----
+requests>=2.31.0
+lxml>=5.0.0               # for pandas.read_html (S&P 500 list)
+html5lib>=1.1
+beautifulsoup4>=4.12.0
+
+# ---- News APIs ----
+finnhub-python>=2.4.20
+
+# ---- Macro data ----
+fredapi>=0.5.1
+
+# ---- Config ----
+python-dotenv>=1.0.0
+
+# ---- Notebooks ----
+jupyterlab>=4.0.0
+ipykernel>=6.29.0
+ipywidgets>=8.1.0
+
+# ---- Viz ----
+matplotlib>=3.8.0
+seaborn>=0.13.0
+plotly>=5.18.0
+
+# ---- Utilities ----
+tqdm>=4.66.0
+
+# ---- Phase 2 (NLP / sentiment) ----
+# Install PyTorch separately with CUDA support, e.g.:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu124
+transformers>=4.40.0
+sentencepiece>=0.2.0
+accelerate>=0.30.0
+
+# ---- Phase 2 (technical indicators / ML) ----
+ta>=0.11.0
+scikit-learn>=1.4.0
+xgboost>=2.0.0
