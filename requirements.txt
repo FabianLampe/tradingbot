@@ -43,3 +43,21 @@ accelerate>=0.30.0
 ta>=0.11.0
 scikit-learn>=1.4.0
 xgboost>=2.0.0
+pyyaml>=6.0           # whitelist config
+shap>=0.45.0          # Phase 3: feature attribution
+
+# ---- Phase 3 (curated sources + LLM) ----
+praw>=7.7.1           # Reddit
+feedparser>=6.0.10    # RSS news
+anthropic>=0.30.0     # Claude API for post-mortems
+
+# ---- Phase 4 (RAG knowledge base) ----
+chromadb>=0.5.0
+sentence-transformers>=3.0.0
+sec-edgar-downloader>=5.0.0
+
+# ---- Phase 5 (UI / orchestration) ----
+streamlit>=1.35.0
+plotly>=5.18.0
+python-telegram-bot>=21.0
+apscheduler>=3.10.0

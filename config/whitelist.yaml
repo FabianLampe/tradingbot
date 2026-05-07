@@ -1,0 +1,57 @@
+# Whitelist of trusted sources.
+# Add/remove freely — modules read this file at runtime, no code change needed.
+# Rule of thumb: only sources with track-record AND signal/noise > 0.
+
+twitter:
+  # Breaking-news / market-moving accounts (real-time)
+  - DeItaone           # Live News by Walter Bloomberg — institutional standard
+  - FirstSquawk        # Real-time newswire
+  - LiveSquawk         # Same niche
+  - markets            # Bloomberg Markets
+  - business           # Bloomberg Business
+  - Reuters
+  - ReutersBiz
+  - WSJmarkets
+  - CNBC
+  - FT
+  # Macro / Fed
+  - federalreserve
+  - NickTimiraos       # WSJ Fed reporter, often first
+  - SteveLiesman       # CNBC Fed reporter
+  # Avoid: pump accounts, crypto-shills, anonymous "alpha" accounts
+
+reddit:
+  # Discussion quality > volume
+  - stocks
+  - investing
+  - SecurityAnalysis
+  - ValueInvesting
+  - options
+  - StockMarket
+  # Explicitly EXCLUDED (pump/manipulation): wallstreetbets, pennystocks,
+  # CryptoMoonShots, SatoshiStreetBets
+
+news_outlets:
+  # Tier 1 (institutional, fact-driven)
+  - reuters.com
+  - bloomberg.com
+  - ft.com
+  - wsj.com
+  - economist.com
+  # Tier 2 (good market coverage, mostly free RSS)
+  - marketwatch.com
+  - cnbc.com
+  - finance.yahoo.com
+  - seekingalpha.com
+  - barrons.com
+  # Regulatory / official
+  - sec.gov
+  - federalreserve.gov
+  - bls.gov
+  - bea.gov
+
+# Outlets we explicitly DOWN-WEIGHT or skip in sentiment scoring
+news_outlets_blacklist:
+  - benzinga.com       # often algorithmic, low signal
+  - zacks.com          # template articles
+  # Add: any outlet that produces near-identical articles for many tickers

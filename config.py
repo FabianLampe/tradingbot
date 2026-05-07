@@ -19,9 +19,21 @@ PRICES_DIR = DATA_DIR / "prices"
 NEWS_DIR = DATA_DIR / "news"
 MACRO_DIR = DATA_DIR / "macro"
 META_DIR = DATA_DIR / "meta"
+MODELS_DIR = DATA_DIR / "models"
+JOURNAL_DIR = DATA_DIR / "journal"
+CONFIG_DIR = PROJECT_ROOT / "config"
 
-for d in (PRICES_DIR, NEWS_DIR, MACRO_DIR, META_DIR):
+for d in (PRICES_DIR, NEWS_DIR, MACRO_DIR, META_DIR, MODELS_DIR, JOURNAL_DIR):
     d.mkdir(parents=True, exist_ok=True)
+
+
+def load_whitelist() -> dict:
+    """Load curated source whitelist (Twitter/Reddit/News)."""
+    import yaml
+    path = CONFIG_DIR / "whitelist.yaml"
+    if not path.exists():
+        return {}
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
 # ---- API keys (None if not set — modules check before calling) ----
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY") or None

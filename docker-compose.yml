@@ -1,0 +1,61 @@
+# Three services run from the SAME image:
+#   dashboard  - Streamlit UI on :8501
+#   telegram   - Telegram bot listener
+#   scheduler  - cron-like daemon that runs daily/premarket pipelines
+#
+# All share /app/data so they see the same prices, model, and journal.
+
+services:
+  dashboard:
+    build: .
+    image: trading-bot:latest
+    container_name: tb-dashboard
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+    command: ["streamlit", "run", "app/dashboard.py",
+              "--server.address=0.0.0.0",
+              "--server.port=8501",
+              "--server.headless=true"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  telegram:
+    image: trading-bot:latest
+    container_name: tb-telegram
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - dashboard
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+    command: ["python", "-m", "app.telegram_bot"]
+
+  scheduler:
+    image: trading-bot:latest
+    container_name: tb-scheduler
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - dashboard
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+    command: ["python", "-m", "scripts.scheduler"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

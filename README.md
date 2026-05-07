@@ -1,0 +1,108 @@
+# Trading Bot — News-driven, Multi-Source, Self-Reflective
+
+Ein news-getriebener Trading-Bot der Empfehlungen für ETFs/Aktien gibt
+und aus eigenen Fehltrades lernt. Default: nur Empfehlungen, kein
+Auto-Trading.
+
+> **WARNUNG:** Trading birgt reales Verlustrisiko. Dieser Bot ist ein
+> Lern- und Analyse-Tool, kein Geldautomat. Nutze Paper-Trading bevor
+> du auch nur einen Euro live einsetzt.
+
+---
+
+## Schnellstart (lokal)
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+Copy-Item .env.example .env
+notepad .env             # Keys eintragen (siehe DEPLOY.md)
+python -m ipykernel install --user --name=trading-bot --display-name "Python (trading-bot)"
+jupyter lab
+```
+
+Dann die Notebooks `01 → 02 → 03 → 04` der Reihe nach ausführen.
+
+---
+
+## Architektur
+
+```
+data/                       # Parquet-Cache, Modelle, Journal — niemals committen
+├── prices/                 # OHLCV pro Ticker
+├── news/                   # Finnhub-News + RSS + Reddit
+├── macro/                  # FRED-Panel
+├── edgar/                  # SEC-Filings (Phase 4)
+├── knowledge/              # Chroma Vector-DB (Phase 4)
+├── models/                 # Trainierte Predictoren
+└── journal/                # Trade Journal (SQLite) + Backtest-Output
+
+src/
+├── data/                   # Ingestion: yfinance, Finnhub, FRED, Reddit, RSS
+├── features/               # Returns, Korrelationen, TA, FinBERT-Sentiment
+├── model/                  # XGBoost-Predictor, Walk-Forward-Backtest, Trade Journal
+├── runtime/                # Daily/Pre-Market Orchestrator
+├── explain/                # SHAP-Attribution + LLM-Postmortem
+└── knowledge/              # SEC EDGAR + Chroma RAG
+
+app/
+├── dashboard.py            # Streamlit Dashboard
+└── telegram_bot.py         # Telegram Bot
+
+scripts/
+├── run_daily.py            # End-of-Day Pipeline
+├── run_premarket.py        # Pre-Market Adjustment
+├── run_backtest.py         # Walk-Forward Backtest
+├── run_postmortems.py      # LLM-Analyse Fehltrades
+├── ingest_edgar.py         # SEC EDGAR -> RAG
+└── scheduler.py            # APScheduler-Daemon
+
+config/
+└── whitelist.yaml          # kuratierte Quellen (Twitter/Reddit/News)
+```
+
+---
+
+## CLI-Cheatsheet
+
+| Kommando | Was es tut |
+|---|---|
+| `python scripts/run_daily.py --universe etfs` | EOD-Pipeline (Daten, Training, Empfehlungen) |
+| `python scripts/run_premarket.py` | Overnight-News-Anpassung |
+| `python scripts/run_backtest.py --universe etfs` | Walk-Forward-Backtest |
+| `python scripts/run_postmortems.py --limit 10` | LLM analysiert die letzten 10 Fehltrades |
+| `python scripts/ingest_edgar.py --universe sp500` | SEC-Filings in RAG einbetten |
+| `streamlit run app/dashboard.py` | Dashboard auf :8501 |
+| `python -m app.telegram_bot` | Telegram-Bot Listener |
+| `python -m app.telegram_bot push` | Einmaliger Push der Empfehlungen |
+
+---
+
+## Server-Deployment
+
+Siehe **[DEPLOY.md](DEPLOY.md)** — Docker-Compose-Setup mit drei Services
+(Dashboard, Telegram, Scheduler) für deinen GPU-Server.
+
+---
+
+## Konfiguration anpassen
+
+| Was | Wo |
+|---|---|
+| API-Keys | `.env` |
+| Quellen-Whitelist (Twitter/Reddit/News) | `config/whitelist.yaml` |
+| Trading-Parameter (Top-N, Kosten, Hebel) | `scripts/run_*.py` Args |
+| Modell-Hyperparameter | `src/model/predictor.py` `Predictor.params` |
+| Pipeline-Reihenfolge | `src/runtime/daily.py` |
+| LLM-Backend (Claude vs lokal) | `.env` `LLM_BACKEND` |
+
+---
+
+## Sicherheit & Recht
+
+- `.env` ist gitignored — niemals committen.
+- DE-Steuerrecht: Kurzfrist-Gewinne unterliegen 25% + Soli. **Cap auf
+  Termingeschäft-Verluste 20.000 EUR/Jahr** — siehe DEPLOY.md.
+- Bot ist Empfehlungssystem. Live-Trading wäre eigene Entscheidung
+  und braucht zusätzliche Implementierung der Broker-Anbindung.
