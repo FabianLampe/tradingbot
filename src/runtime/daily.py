@@ -126,6 +126,7 @@ def step_retrain(
         raise RuntimeError("Empty dataset — check that prices + features built correctly.")
 
     feature_cols = build_dataset.feature_columns(dataset)
+    transform = build_dataset.feature_transform_of(dataset)
 
     do_full = force_full
     if not do_full:
@@ -135,11 +136,18 @@ def step_retrain(
             if set(predictor.feature_cols) != set(feature_cols):
                 log.info("Feature schema changed — forcing full retrain.")
                 do_full = True
+            # Same column names, different scaling — a warm start here would
+            # feed per-date ranks to a model trained on raw levels.
+            elif predictor.feature_transform != transform:
+                log.info("Feature scaling changed (%s -> %s) — forcing full retrain.",
+                         predictor.feature_transform, transform)
+                do_full = True
         except FileNotFoundError:
             do_full = True
 
     if do_full:
-        predictor = Predictor(feature_cols=feature_cols, horizon_days=horizon_days)
+        predictor = Predictor(feature_cols=feature_cols, horizon_days=horizon_days,
+                              feature_transform=transform)
         cutoff = dataset["date"].quantile(0.9)
         train = dataset[dataset["date"] < cutoff]
         val = dataset[dataset["date"] >= cutoff]

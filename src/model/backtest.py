@@ -21,13 +21,22 @@ Each rebalance day:
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 
+import config as project_config
 from src.model.predictor import Predictor
+from src.storage import db
+
+log = logging.getLogger("trading_bot.backtest")
+
+# Notebook 02 and scripts/ingest_prices cache the benchmark under this name —
+# "^GSPC" is not a legal filename stem, so the underscore form is the convention.
+BENCHMARK_SYMBOL = "_GSPC"
 
 
 @dataclass
@@ -41,6 +50,7 @@ class BacktestConfig:
     train_window_years: int | None = None   # None = expanding window
     test_window_days: int = 21          # ~1 trading month
     leverage: float = 1.0
+    benchmark_symbol: str = BENCHMARK_SYMBOL
 
 
 @dataclass
@@ -48,19 +58,129 @@ class BacktestResult:
     equity_curve: pd.Series              # capital over time
     trades: pd.DataFrame                 # one row per closed trade
     daily_returns: pd.Series             # portfolio simple-return per day
-    metrics: dict                        # Sharpe, MDD, win rate, etc.
+    metrics: dict                        # Sharpe, MDD, win rate, alpha, IR, ...
+    benchmark_returns: pd.Series | None = None   # aligned to the holding periods
 
 
-def _annualised_sharpe(daily_returns: pd.Series) -> float:
-    if daily_returns.std() == 0 or daily_returns.empty:
+def _annualised_sharpe(returns: pd.Series, periods_per_year: float = 252.0) -> float:
+    """Sharpe at a risk-free rate of 0, annualised from the series' own frequency."""
+    if returns.empty or returns.std() == 0 or np.isnan(returns.std()):
         return 0.0
-    return float(np.sqrt(252) * daily_returns.mean() / daily_returns.std())
+    return float(np.sqrt(periods_per_year) * returns.mean() / returns.std())
 
 
 def _max_drawdown(equity: pd.Series) -> float:
     peak = equity.cummax()
     dd = (equity - peak) / peak
     return float(dd.min())
+
+
+def _annualise(total_return: float, years: float) -> float:
+    """Geometric annualisation over the actual elapsed time."""
+    if years <= 0:
+        return 0.0
+    return float((1.0 + total_return) ** (1.0 / years) - 1.0)
+
+
+def load_benchmark(symbol: str = BENCHMARK_SYMBOL) -> pd.Series | None:
+    """Adjusted-close series for the benchmark, or None if it is not cached."""
+    try:
+        px = db.read_prices(symbol)
+    except FileNotFoundError:
+        log.warning(
+            "Benchmark %s not cached — skipping benchmark-relative metrics. "
+            "Cache it with: python -c \"from src.data import prices; "
+            "prices.download_benchmark()\"  (downloads %s).",
+            symbol, project_config.DEFAULT_BENCHMARK,
+        )
+        return None
+    if px.empty or "adj_close" not in px.columns:
+        return None
+    s = px["adj_close"].copy()
+    s.index = pd.to_datetime(s.index)
+    return s.sort_index()
+
+
+def benchmark_holding_returns(
+    benchmark: pd.Series,
+    entry_dates: pd.DatetimeIndex,
+    horizon_days: int,
+) -> pd.Series:
+    """Benchmark return over each trade's holding window.
+
+    The portfolio books one `horizon_days` return per entry date. Comparing
+    that against *daily* benchmark returns would be comparing different
+    horizons, so we measure the benchmark over exactly the same windows:
+    entry close -> close `horizon_days` business days later.
+    """
+    idx = benchmark.index
+    out = {}
+    for entry in entry_dates:
+        try:
+            i = idx.get_indexer([entry], method="bfill")[0]
+        except Exception:  # noqa: BLE001
+            continue
+        j = i + horizon_days
+        if i < 0 or j >= len(idx):
+            continue
+        out[entry] = float(benchmark.iloc[j] / benchmark.iloc[i] - 1.0)
+    return pd.Series(out, name="benchmark").sort_index()
+
+
+def _relative_metrics(
+    portfolio: pd.Series,
+    benchmark: pd.Series,
+    periods_per_year: float,
+) -> dict:
+    """Alpha, beta, information ratio — all on aligned holding-period returns.
+
+    Risk-free rate is taken as 0. At current short rates that flatters both
+    the strategy and the benchmark by roughly the same amount, so the
+    *relative* numbers (alpha, IR) stay honest; the absolute Sharpe does not.
+
+    Read `alpha_annualised` together with `beta_vs_benchmark`, not on its own.
+    Alpha is return *net of the market exposure actually taken*, so a
+    market-neutral strategy (beta ~ 0) earning 6% shows alpha 6% even in a year
+    the index did 12% — correct, but not "it beat the market". Conversely a
+    2x-levered index tracker shows large excess return and alpha ~ 0, which is
+    the honest verdict: leverage is not skill. `information_ratio` is the one
+    number that does not need this caveat; treat it as the headline.
+    """
+    joined = pd.concat([portfolio.rename("p"), benchmark.rename("b")], axis=1).dropna()
+    if len(joined) < 3:
+        return {"benchmark_error": f"only {len(joined)} overlapping periods"}
+
+    p, b = joined["p"], joined["b"]
+    var_b = float(b.var())
+    beta = float(p.cov(b) / var_b) if var_b > 0 else float("nan")
+
+    excess = p - b                      # active return vs a 1x benchmark position
+    bench_total = float((1.0 + b).prod() - 1.0)
+    port_total = float((1.0 + p).prod() - 1.0)
+    years = len(joined) / periods_per_year
+
+    metrics = {
+        "benchmark_symbol": benchmark.attrs.get("symbol", BENCHMARK_SYMBOL),
+        "benchmark_periods": int(len(joined)),
+        "benchmark_total_return": bench_total,
+        "benchmark_annualised_return": _annualise(bench_total, years),
+        "benchmark_sharpe": _annualised_sharpe(b, periods_per_year),
+        "excess_total_return": port_total - bench_total,
+        "excess_annualised_return": (
+            _annualise(port_total, years) - _annualise(bench_total, years)
+        ),
+        # Information ratio: the headline number. Mean active return divided by
+        # its volatility. Below ~0.3 the strategy is not beating buy-and-hold
+        # by enough to justify the turnover and the risk of being wrong.
+        "information_ratio": _annualised_sharpe(excess, periods_per_year),
+        "beta_vs_benchmark": beta,
+    }
+    if not np.isnan(beta):
+        # Jensen's alpha: the part of the return not explained by market exposure.
+        alpha_per_period = float(p.mean() - beta * b.mean())
+        metrics["alpha_annualised"] = alpha_per_period * periods_per_year
+        metrics["hit_rate_vs_benchmark"] = float((excess > 0).mean())
+    return metrics
 
 
 def walk_forward(
@@ -162,25 +282,53 @@ def walk_forward(
     )
     equity = config.initial_capital * (1 + daily_returns).cumprod()
 
+    # One return per rebalance, each covering `horizon_days`. This — not the
+    # zero-padded daily series — is the strategy's true return frequency, and
+    # it is what the benchmark gets aligned to.
+    period_returns = trades_df.groupby("entry_date")["pnl"].sum().sort_index()
+    period_returns.index = pd.DatetimeIndex(period_returns.index)
+
+    # Annualise over the period actually traded. The dataset's first ~40% is
+    # training-only warmup where equity sits flat at the initial capital;
+    # including it would understate every annualised figure.
+    first_trade, last_trade = period_returns.index.min(), period_returns.index.max()
+    traded_years = max((last_trade - first_trade).days / 365.25, 1e-9)
+    periods_per_year = len(period_returns) / traded_years
+    total_return = float(equity.iloc[-1] / config.initial_capital - 1)
+    mdd = _max_drawdown(equity)
+
     metrics = {
         "n_trades": int(len(trades_df)),
+        "n_rebalances": int(len(period_returns)),
+        "traded_years": float(traded_years),
         "win_rate": float((trades_df["pnl"] > 0).mean()),
         "mean_pnl_per_trade": float(trades_df["pnl"].mean()),
-        "total_return": float(equity.iloc[-1] / config.initial_capital - 1),
-        "annualised_return": float(
-            (equity.iloc[-1] / config.initial_capital) ** (252 / max(len(daily_returns), 1)) - 1
-        ),
-        "sharpe": _annualised_sharpe(daily_returns),
-        "max_drawdown": _max_drawdown(equity),
-        "calmar": (
-            (equity.iloc[-1] / config.initial_capital - 1)
-            / abs(_max_drawdown(equity))
-            if _max_drawdown(equity) < 0 else float("inf")
-        ),
+        "total_return": total_return,
+        "annualised_return": _annualise(total_return, traded_years),
+        "sharpe": _annualised_sharpe(period_returns, periods_per_year),
+        "max_drawdown": mdd,
+        "calmar": total_return / abs(mdd) if mdd < 0 else float("inf"),
     }
+
+    bench_periods: pd.Series | None = None
+    benchmark = load_benchmark(config.benchmark_symbol)
+    if benchmark is not None:
+        bench_periods = benchmark_holding_returns(
+            benchmark, period_returns.index, config.horizon_days
+        )
+        bench_periods.attrs["symbol"] = config.benchmark_symbol
+        metrics.update(_relative_metrics(period_returns, bench_periods, periods_per_year))
+    else:
+        metrics["benchmark_error"] = (
+            f"{config.benchmark_symbol} not cached — absolute returns only. "
+            "A long-only strategy in a bull market looks good on absolute "
+            "numbers alone; cache the benchmark to see whether it is alpha."
+        )
+
     return BacktestResult(
         equity_curve=equity,
         trades=trades_df,
         daily_returns=daily_returns,
         metrics=metrics,
+        benchmark_returns=bench_periods,
     )

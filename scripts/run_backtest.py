@@ -11,10 +11,11 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import pandas as pd
 
 import config
-from src.data import universe
+from src.data import prices, universe
 from src.features import build_dataset
 from src.model import backtest as bt_mod
 from src.model.predictor import Predictor
+from src.storage import db
 
 
 def main():
@@ -26,6 +27,12 @@ def main():
     p.add_argument("--cost-bps", type=float, default=5.0)
     p.add_argument("--leverage", type=float, default=1.0)
     p.add_argument("--initial", type=float, default=100_000.0)
+    p.add_argument("--no-cross-sectional", action="store_true",
+                   help="Use raw feature levels instead of per-date ranks "
+                        "(lets the model trade market regime, not selection)")
+    p.add_argument("--cross-sectional-method", choices=["rank", "zscore"], default="rank")
+    p.add_argument("--no-benchmark", action="store_true",
+                   help="Skip the benchmark download and report absolute returns only")
     args = p.parse_args()
 
     if args.universe == "etfs":
@@ -35,8 +42,17 @@ def main():
     else:
         symbols = universe.all_symbols()
 
+    if not args.no_benchmark and not db.price_path(bt_mod.BENCHMARK_SYMBOL).exists():
+        print(f"Benchmark {config.DEFAULT_BENCHMARK} not cached — downloading ...")
+        prices.download_benchmark()
+
     print(f"Building dataset for {len(symbols)} symbols, horizon {args.horizon}d ...")
-    dataset = build_dataset.build_dataset(symbols, horizon_days=args.horizon)
+    dataset = build_dataset.build_dataset(
+        symbols,
+        horizon_days=args.horizon,
+        cross_sectional=not args.no_cross_sectional,
+        cross_sectional_method=args.cross_sectional_method,
+    )
     if dataset.empty:
         print("Empty dataset — make sure prices are downloaded (Notebook 02).")
         return
@@ -52,8 +68,12 @@ def main():
         initial_capital=args.initial,
     )
 
+    transform = build_dataset.feature_transform_of(dataset)
+    print(f"Feature scaling: {transform}")
+
     def factory():
-        return Predictor(feature_cols=feature_cols, horizon_days=args.horizon)
+        return Predictor(feature_cols=feature_cols, horizon_days=args.horizon,
+                         feature_transform=transform)
 
     print("Running walk-forward (this can take a few minutes) ...")
     result = bt_mod.walk_forward(dataset, factory, config_bt)
@@ -63,12 +83,37 @@ def main():
     pd.Series(result.equity_curve, name="equity").to_frame().to_parquet(eq_path)
     result.trades.to_parquet(tr_path, index=False)
 
-    print("\n=== BACKTEST METRICS ===")
-    for k, v in result.metrics.items():
-        if isinstance(v, float):
-            print(f"  {k:24} {v:>10.4f}")
-        else:
-            print(f"  {k:24} {v}")
+    def _show(title, keys):
+        shown = [(k, result.metrics[k]) for k in keys if k in result.metrics]
+        if not shown:
+            return
+        print(f"\n=== {title} ===")
+        for k, v in shown:
+            print(f"  {k:28} {v:>10.4f}" if isinstance(v, float) else f"  {k:28} {v}")
+
+    _show("STRATEGY (absolute)", [
+        "n_trades", "n_rebalances", "traded_years", "win_rate",
+        "mean_pnl_per_trade", "total_return", "annualised_return",
+        "sharpe", "max_drawdown", "calmar",
+    ])
+    _show("VS BENCHMARK", [
+        "benchmark_symbol", "benchmark_periods", "benchmark_total_return",
+        "benchmark_annualised_return", "benchmark_sharpe",
+        "excess_total_return", "excess_annualised_return",
+        "information_ratio", "alpha_annualised", "beta_vs_benchmark",
+        "hit_rate_vs_benchmark",
+    ])
+    if err := result.metrics.get("benchmark_error"):
+        print(f"\n  [!] {err}")
+    else:
+        ir = result.metrics.get("information_ratio")
+        if ir is not None:
+            verdict = ("beats buy-and-hold" if ir > 0.3
+                       else "no meaningful edge over buy-and-hold")
+            print(f"\n  -> Information ratio {ir:.2f}: {verdict}.")
+            print("     The absolute return above is mostly market exposure "
+                  "unless this number is clearly positive.")
+
     print(f"\nEquity curve -> {eq_path}")
     print(f"Trades       -> {tr_path}")
 

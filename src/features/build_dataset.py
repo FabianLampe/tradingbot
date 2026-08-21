@@ -14,6 +14,7 @@ but the structure makes it harder to mess up.
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Iterable
 
@@ -25,6 +26,8 @@ from config import MACRO_DIR, NEWS_DIR
 from src.features import returns as ret_mod
 from src.features import technical
 from src.storage import db
+
+log = logging.getLogger("trading_bot.features.build_dataset")
 
 
 def _load_cross_sentiment(symbols: list[str]) -> pd.DataFrame | None:
@@ -126,18 +129,123 @@ def build_per_symbol(
     return feat.reset_index().rename(columns={"index": "date"})
 
 
+def market_wide_columns(
+    df: pd.DataFrame,
+    feature_cols: list[str],
+    tol: float = 1e-9,
+) -> list[str]:
+    """Features that are identical across all symbols on a given date.
+
+    Macro (VIX, fed funds) and market-sentiment columns are broadcast from a
+    per-date panel, so every symbol shares the same value. They carry regime
+    information, not cross-sectional information, and must be left out of the
+    per-date normalisation — z-scoring them would divide by a zero standard
+    deviation and collapse the whole column to 0.
+    """
+    if df.empty or not feature_cols:
+        return []
+    spread = df.groupby("date")[feature_cols].std(numeric_only=True).max()
+    return [c for c in feature_cols if not (spread.get(c, 0) > tol)]
+
+
+def cross_sectional_normalize(
+    df: pd.DataFrame,
+    feature_cols: list[str] | None = None,
+    method: str = "rank",
+    min_symbols: int = 10,
+) -> pd.DataFrame:
+    """Rescale per-symbol features *within each date*.
+
+    Without this the model mostly learns market regime: on a day the whole
+    market sells off, every stock's RSI is low and every sentiment score is
+    negative, so "RSI < 30" predicts a down move for reasons that have nothing
+    to do with the individual stock. Since the strategy is Top-N *ranking*
+    among symbols on the same day, what the model needs is each symbol's
+    standing relative to its peers that day — not its absolute level.
+
+    method:
+      "rank"   percentile rank within the date, centred to [-0.5, 0.5].
+               Robust to outliers and to the fat tails of return-based
+               features, and it is exactly what a Top-N selection consumes.
+      "zscore" (x - mean) / std within the date. Keeps relative distances,
+               but a single extreme value distorts the whole day.
+
+    Market-wide columns (see `market_wide_columns`) are left untouched, so the
+    model can still condition on regime — it just cannot use regime as a
+    stand-in for stock selection.
+
+    Skipped with a warning when the average date holds fewer than
+    `min_symbols` symbols: a cross-section of three is noise, and applying it
+    to some dates but not others would give one column two different meanings.
+    """
+    if df.empty:
+        return df
+    if method not in ("rank", "zscore"):
+        raise ValueError(f"method must be 'rank' or 'zscore', got {method!r}")
+
+    feature_cols = feature_cols or feature_columns(df)
+    if not feature_cols:
+        return df
+
+    avg_cross_section = df.groupby("date")["symbol"].nunique().mean()
+    if avg_cross_section < min_symbols:
+        log.warning(
+            "Cross-sectional normalisation skipped: only %.1f symbols per date "
+            "on average (need %d). Run with a larger universe, or lower "
+            "min_symbols if you accept the noise.",
+            avg_cross_section, min_symbols,
+        )
+        return df
+
+    market_cols = set(market_wide_columns(df, feature_cols))
+    targets = [c for c in feature_cols if c not in market_cols]
+    if not targets:
+        return df
+
+    out = df.copy()
+    grouped = out.groupby("date")[targets]
+    if method == "rank":
+        # Midpoint convention: (rank - 0.5) / n - 0.5, spanning ~[-0.5, 0.5]
+        # with a mean of exactly 0 for any n. The obvious `rank(pct=True) - 0.5`
+        # is centred at 1/(2n) instead, so the feature's zero point would drift
+        # with the size of the cross-section — and that size changes over time
+        # as symbols are added, delisted, or simply missing data that day.
+        counts = grouped.transform("count")
+        out[targets] = (grouped.rank(method="average") - 0.5) / counts - 0.5
+    else:
+        mean = grouped.transform("mean")
+        std = grouped.transform("std")
+        # A date where a feature does not vary carries no ranking signal.
+        out[targets] = ((out[targets] - mean) / std.where(std > 1e-12)).fillna(0.0)
+
+    log.info(
+        "Cross-sectional %s applied to %d/%d features (%d market-wide left as-is)",
+        method, len(targets), len(feature_cols), len(market_cols),
+    )
+    return out
+
+
 def build_dataset(
     symbols: Iterable[str],
     horizon_days: int = 5,
     up_thresh: float = 0.01,
     down_thresh: float = 0.01,
     include_cross_sentiment: bool = True,
+    cross_sectional: bool = True,
+    cross_sectional_method: str = "rank",
+    min_symbols_for_cross_section: int = 10,
 ) -> pd.DataFrame:
     """Build the full long-format supervised dataset for many symbols.
 
     If `include_cross_sentiment` is True (default), also joins peer-,
     sector-, market-, and lag-sentiment features built by the
     `cross_sentiment` module. Skipped silently if dependencies are missing.
+
+    If `cross_sectional` is True (default), per-symbol features are rescaled
+    within each date — see `cross_sectional_normalize`. This changes the
+    feature *values*, not the column names, so a model trained before the
+    switch must be retrained (`runtime.daily` detects this only when the
+    schema changes, so force a full retrain when you flip this flag).
     """
     symbols = list(symbols)
     macro = _load_macro_panel()
@@ -170,7 +278,30 @@ def build_dataset(
             new_cols = [c for c in keep_cols if c not in ("date", "symbol")]
             full[new_cols] = full[new_cols].fillna(0.0)
 
+    if cross_sectional:
+        before = full
+        full = cross_sectional_normalize(
+            full,
+            method=cross_sectional_method,
+            min_symbols=min_symbols_for_cross_section,
+        )
+        applied = full is not before
+    else:
+        applied = False
+
+    # Tag how the features were scaled. The column *names* are identical either
+    # way, so a model trained on raw levels would happily accept rank features
+    # and return nonsense; `runtime.daily` compares this tag and forces a full
+    # retrain on mismatch. Set last, so no concat/merge can drop the attrs.
+    full.attrs["feature_transform"] = (
+        f"cross_sectional_{cross_sectional_method}" if applied else "raw"
+    )
     return full
+
+
+def feature_transform_of(df: pd.DataFrame) -> str:
+    """Read back the tag set by `build_dataset` (defaults to 'raw')."""
+    return str(df.attrs.get("feature_transform", "raw"))
 
 
 def feature_columns(df: pd.DataFrame) -> list[str]:

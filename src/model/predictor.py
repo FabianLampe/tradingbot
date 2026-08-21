@@ -49,6 +49,10 @@ class Predictor:
     n_estimators: int = 500
     early_stopping_rounds: int = 30
     booster: xgb.Booster | None = None
+    # How the features were scaled when this model was trained (see
+    # build_dataset.feature_transform_of). Raw levels and per-date ranks share
+    # the same column names, so this is the only thing separating them.
+    feature_transform: str = "raw"
 
     # ---------- training ----------
 
@@ -130,6 +134,7 @@ class Predictor:
             "feature_cols": self.feature_cols,
             "horizon_days": self.horizon_days,
             "params": self.params,
+            "feature_transform": self.feature_transform,
         }
         meta_path = MODELS_DIR / f"{name}.meta.json"
         import json
@@ -142,7 +147,9 @@ class Predictor:
         meta_path = MODELS_DIR / f"{name}.meta.json"
         meta = json.loads(meta_path.read_text())
         p = cls(feature_cols=meta["feature_cols"], horizon_days=meta["horizon_days"],
-                params=meta["params"])
+                params=meta["params"],
+                # Models saved before feature scaling was tracked were raw-level.
+                feature_transform=meta.get("feature_transform", "raw"))
         p.booster = xgb.Booster()
         p.booster.load_model(str(MODELS_DIR / f"{name}.json"))
         return p

@@ -205,6 +205,40 @@ def download_batch(
     return out
 
 
+def benchmark_cache_name(symbol: str) -> str:
+    """Filename-safe stem for an index ticker ('^GSPC' -> '_GSPC').
+
+    Index tickers start with '^', which is awkward in a path and would also
+    make the index look like a tradeable symbol in `read_all_prices`.
+    """
+    return "_" + str(symbol).lstrip("^").upper()
+
+
+def download_benchmark(
+    symbol: str | None = None,
+    start: str | date | None = None,
+    years: int = DEFAULT_HISTORY_YEARS,
+) -> pd.DataFrame:
+    """Download and cache the benchmark index (default: `config.DEFAULT_BENCHMARK`).
+
+    Stored under `benchmark_cache_name(symbol)` so `src.model.backtest` can
+    find it for the benchmark-relative metrics.
+    """
+    from config import DEFAULT_BENCHMARK
+
+    symbol = symbol or DEFAULT_BENCHMARK
+    df = download_one(symbol, start=start, years=years)
+    if df.empty:
+        log.warning("[%s] benchmark download returned nothing", symbol)
+        return df
+    name = benchmark_cache_name(symbol)
+    existing = db.read_prices(name) if db.price_path(name).exists() else None
+    merged = merge_prices(existing, df)
+    db.write_prices(name, merged)
+    log.info("Benchmark %s cached as %s (%d rows)", symbol, name, len(merged))
+    return merged
+
+
 def download_and_cache(
     symbols: Iterable[str],
     start: str | date | None = None,

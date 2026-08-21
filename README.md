@@ -77,7 +77,8 @@ config/
 |---|---|
 | `python scripts/run_daily.py --universe etfs` | EOD-Pipeline (Daten, Training, Empfehlungen) |
 | `python scripts/run_premarket.py` | Overnight-News-Anpassung |
-| `python scripts/run_backtest.py --universe etfs` | Walk-Forward-Backtest |
+| `python scripts/run_backtest.py --universe etfs` | Walk-Forward-Backtest (inkl. Alpha/IR gegen S&P 500) |
+| `python scripts/run_backtest.py --no-cross-sectional` | Backtest auf Feature-Rohwerten statt Tagesrängen |
 | `python scripts/run_postmortems.py --limit 10` | LLM analysiert die letzten 10 Fehltrades |
 | `python scripts/ingest_news.py --symbols AAPL,MSFT --days-back 90` | News-Backfill pro Ticker |
 | `python scripts/ingest_news.py --rss --reddit` | Markt-RSS + Reddit einmalig ziehen |
