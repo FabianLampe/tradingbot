@@ -136,12 +136,20 @@ def with_retries(
     attempts: int = 3,
     base_delay: float = 2.0,
     on_error: Callable[[int, Exception], None] | None = None,
+    give_up_on: tuple[type[BaseException], ...] = (),
 ) -> T:
-    """Call `fn`, retrying transient failures with exponential backoff."""
+    """Call `fn`, retrying transient failures with exponential backoff.
+
+    `give_up_on` names exception types that are known to be permanent
+    (a rejected API key, an unknown series id) — those are re-raised
+    immediately instead of being retried into a long, pointless wait.
+    """
     last: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
             return fn()
+        except give_up_on:
+            raise
         except Exception as e:  # noqa: BLE001 — provider SDKs raise freely
             last = e
             if on_error is not None:

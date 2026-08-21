@@ -40,6 +40,9 @@ data/                       # Parquet-Cache, Modelle, Journal — niemals commit
 
 src/
 ├── data/                   # Ingestion: yfinance, Finnhub, FRED, Reddit, RSS
+│   ├── universe.py         # S&P-500-Liste (Wikipedia, gecacht) + ETF-Universum
+│   ├── prices.py           # OHLCV via yfinance (Cache wird gemerged, nie ersetzt)
+│   ├── macro.py            # FRED-Panel (mit Publikations-Lag gegen Leakage)
 │   ├── news.py             # Company-News (Finnhub, Fallback Alpha Vantage)
 │   ├── rss_news.py         # Markt-News aus den Whitelist-RSS-Feeds
 │   └── social.py           # Reddit (kuratierte Subreddits)
