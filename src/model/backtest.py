@@ -29,6 +29,7 @@ import pandas as pd
 from tqdm.auto import tqdm
 
 import config as project_config
+from src.model.costs import CostModel
 from src.model.predictor import Predictor
 from src.storage import db
 
@@ -45,12 +46,30 @@ class BacktestConfig:
     rebalance_days: int = 5             # equal to horizon: non-overlapping trades
     top_n_long: int = 10
     top_n_short: int = 0                # 0 = long-only
-    cost_bps: float = 5.0               # per side (entry + exit each pay this)
+    cost_bps: float = 5.0               # per side; used only when cost_model is None
     initial_capital: float = 100_000.0
     train_window_years: int | None = None   # None = expanding window
     test_window_days: int = 21          # ~1 trading month
     leverage: float = 1.0
     benchmark_symbol: str = BENCHMARK_SYMBOL
+    ruin_fraction: float = 0.01
+    """Stop the run once equity falls below this fraction of the starting
+    capital. A wiped-out account is a terminal state, not a small number to
+    keep compounding: with a fixed per-order fee, a shrinking account pays an
+    ever-larger *percentage* per trade, so continuing produces a death spiral
+    and meaningless infinities instead of the finding, which is 'ruined'."""
+
+    cost_model: CostModel | None = None
+    """Realistic costs (spread + slippage + commission). When set, position
+    notional is tracked through the run so a fixed per-order fee shows up as
+    the percentage it actually is — which is what decides whether a strategy
+    works at a given account size. Leave None for the flat `cost_bps`
+    behaviour the earlier results were produced with."""
+
+    def resolved_cost_model(self) -> CostModel:
+        return self.cost_model or CostModel(
+            spread_bps=self.cost_bps, slippage_bps=0.0, name="flat_from_cost_bps",
+        )
 
 
 @dataclass
@@ -79,7 +98,13 @@ def _annualise(total_return: float, years: float) -> float:
     """Geometric annualisation over the actual elapsed time."""
     if years <= 0:
         return 0.0
-    return float((1.0 + total_return) ** (1.0 / years) - 1.0)
+    growth = 1.0 + total_return
+    if growth <= 0:
+        # Total loss. Raising a non-positive base to a fractional power returns
+        # a complex number in Python, so short-circuit: nothing left is -100%,
+        # however long it took to get there.
+        return -1.0
+    return float(growth ** (1.0 / years) - 1.0)
 
 
 def load_benchmark(symbol: str = BENCHMARK_SYMBOL) -> pd.Series | None:
@@ -206,7 +231,10 @@ def walk_forward(
     test_starts = all_dates[first_test_idx::config.test_window_days]
 
     trades: list[dict] = []
-    daily_pnl: dict[pd.Timestamp, float] = {}
+    cost_model = config.resolved_cost_model()
+    equity_now = config.initial_capital
+    ruin_level = config.initial_capital * config.ruin_fraction
+    ruined_at: pd.Timestamp | None = None
 
     for win_start in tqdm(test_starts, desc="Walk-forward"):
         win_end_idx = min(
@@ -249,23 +277,59 @@ def walk_forward(
             if n_pos == 0:
                 continue
             weight = (config.leverage / n_pos)
-            cost = (config.cost_bps / 10_000) * 2  # entry + exit
+            # Position size in currency, so a fixed commission converts to the
+            # right percentage. This is why equity is tracked through the loop
+            # rather than reconstructed afterwards.
+            notional = equity_now * weight
+            period_return = 0.0
+
             for _, row in longs.iterrows():
+                gross = np.exp(row["fwd_return"]) - 1
+                cost_frac = cost_model.round_trip_fraction(
+                    notional, config.horizon_days, "long")
+                pnl = weight * (gross - cost_frac)
+                period_return += pnl
                 trades.append({
                     "entry_date": rebal_date, "symbol": row["symbol"],
                     "side": "long", "score": row["score"],
                     "fwd_return": row["fwd_return"],
-                    "weight": weight,
-                    "pnl": weight * (np.exp(row["fwd_return"]) - 1 - cost),
+                    "weight": weight, "notional": notional,
+                    "gross_pnl": weight * gross,
+                    "cost": weight * cost_frac,
+                    "pnl": pnl,
                 })
             for _, row in shorts.iterrows():
+                gross = -(np.exp(row["fwd_return"]) - 1)
+                cost_frac = cost_model.round_trip_fraction(
+                    notional, config.horizon_days, "short")
+                pnl = weight * (gross - cost_frac)
+                period_return += pnl
                 trades.append({
                     "entry_date": rebal_date, "symbol": row["symbol"],
                     "side": "short", "score": row["score"],
                     "fwd_return": row["fwd_return"],
-                    "weight": weight,
-                    "pnl": weight * (-(np.exp(row["fwd_return"]) - 1) - cost),
+                    "weight": weight, "notional": notional,
+                    "gross_pnl": weight * gross,
+                    "cost": weight * cost_frac,
+                    "pnl": pnl,
                 })
+
+            # You cannot lose more than the capital committed to the period.
+            period_return = max(period_return, -1.0)
+            # Compound so the next rebalance sizes off the updated account.
+            equity_now *= (1 + period_return)
+
+            if equity_now <= ruin_level:
+                ruined_at = pd.Timestamp(rebal_date)
+                log.warning(
+                    "Account ruined on %s: equity %.2f fell below %.2f (%.0f%% of "
+                    "the starting %.2f). Stopping the run.",
+                    ruined_at.date(), equity_now, ruin_level,
+                    config.ruin_fraction * 100, config.initial_capital,
+                )
+                break
+        if ruined_at is not None:
+            break
 
     trades_df = pd.DataFrame(trades)
     if trades_df.empty:
@@ -276,17 +340,22 @@ def walk_forward(
             metrics={"error": "no trades produced"},
         )
 
-    # PnL hits the *exit* date conceptually; we simplify by attributing to entry date
-    daily_returns = (
-        trades_df.groupby("entry_date")["pnl"].sum().reindex(all_dates, fill_value=0.0)
-    )
-    equity = config.initial_capital * (1 + daily_returns).cumprod()
-
     # One return per rebalance, each covering `horizon_days`. This — not the
     # zero-padded daily series — is the strategy's true return frequency, and
     # it is what the benchmark gets aligned to.
-    period_returns = trades_df.groupby("entry_date")["pnl"].sum().sort_index()
+    #
+    # Clipped at -100% for the same reason the simulation loop clips: without
+    # leverage you cannot lose more than the capital committed, and letting a
+    # period past -1 through would drive the equity curve negative and make
+    # every downstream metric meaningless.
+    period_returns = (
+        trades_df.groupby("entry_date")["pnl"].sum().clip(lower=-1.0).sort_index()
+    )
     period_returns.index = pd.DatetimeIndex(period_returns.index)
+
+    # PnL hits the *exit* date conceptually; we simplify by attributing to entry date
+    daily_returns = period_returns.reindex(all_dates, fill_value=0.0)
+    equity = config.initial_capital * (1 + daily_returns).cumprod()
 
     # Annualise over the period actually traded. The dataset's first ~40% is
     # training-only warmup where equity sits flat at the initial capital;
@@ -296,6 +365,11 @@ def walk_forward(
     periods_per_year = len(period_returns) / traded_years
     total_return = float(equity.iloc[-1] / config.initial_capital - 1)
     mdd = _max_drawdown(equity)
+
+    # What the strategy would have made with no trading frictions at all.
+    # The gap between this and total_return is the whole cost question.
+    gross_periods = trades_df.groupby("entry_date")["gross_pnl"].sum().sort_index()
+    gross_total = float((1 + gross_periods).prod() - 1)
 
     metrics = {
         "n_trades": int(len(trades_df)),
@@ -308,7 +382,30 @@ def walk_forward(
         "sharpe": _annualised_sharpe(period_returns, periods_per_year),
         "max_drawdown": mdd,
         "calmar": total_return / abs(mdd) if mdd < 0 else float("inf"),
+        # --- cost block ---
+        "cost_model": cost_model.name,
+        "gross_total_return": gross_total,
+        "gross_annualised_return": _annualise(gross_total, traded_years),
+        "cost_drag_annualised": (
+            _annualise(gross_total, traded_years) - _annualise(total_return, traded_years)
+        ),
+        "avg_position_size": float(trades_df["notional"].mean()),
+        "avg_round_trip_cost": float(
+            (trades_df["cost"] / trades_df["weight"].replace(0, np.nan)).mean()
+        ),
+        "ruined": ruined_at is not None,
     }
+    if ruined_at is not None:
+        metrics["ruin_date"] = str(ruined_at.date())
+        metrics["survived_years"] = float(
+            (ruined_at - first_trade).days / 365.25
+        )
+        metrics["ruin_note"] = (
+            f"Account fell below {config.ruin_fraction:.0%} of its starting capital "
+            f"and the run stopped. Gross return was {gross_total:+.1%} over the same "
+            f"trades — the strategy was killed by costs at this account size, not by "
+            f"the signal."
+        )
 
     bench_periods: pd.Series | None = None
     benchmark = load_benchmark(config.benchmark_symbol)

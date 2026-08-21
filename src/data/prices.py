@@ -45,11 +45,12 @@ _COLUMN_ALIASES = {
 }
 
 
-def empty_price_frame() -> pd.DataFrame:
+def empty_price_frame(intraday: bool = False) -> pd.DataFrame:
     """Correctly-typed empty frame with the canonical price schema."""
     df = pd.DataFrame({c: pd.Series(dtype="float64") for c in PRICE_COLUMNS})
     df["volume"] = pd.Series(dtype="int64")
-    df.index = pd.DatetimeIndex([], name="date")
+    df.index = (pd.DatetimeIndex([], name="timestamp", tz="UTC") if intraday
+                else pd.DatetimeIndex([], name="date"))
     return df
 
 
@@ -57,10 +58,17 @@ def _default_start(years: int = DEFAULT_HISTORY_YEARS) -> str:
     return (datetime.now(tz=timezone.utc).date() - timedelta(days=365 * years)).isoformat()
 
 
-def _normalise(raw: pd.DataFrame, symbol: str) -> pd.DataFrame:
-    """yfinance frame -> canonical schema. Empty frame if unusable."""
+def _normalise(raw: pd.DataFrame, symbol: str, intraday: bool = False) -> pd.DataFrame:
+    """yfinance frame -> canonical schema. Empty frame if unusable.
+
+    `intraday=True` keeps the time-of-day and the timezone (as UTC) and names
+    the index "timestamp"; daily bars are normalised to midnight, tz-naive,
+    and named "date". An intraday index must stay tz-aware — a 09:30 bar is
+    only meaningful relative to the exchange session, and DST shifts would
+    silently misalign bars across March and November otherwise.
+    """
     if raw is None or len(raw) == 0:
-        return empty_price_frame()
+        return empty_price_frame(intraday=intraday)
 
     df = raw.copy()
 
@@ -86,23 +94,30 @@ def _normalise(raw: pd.DataFrame, symbol: str) -> pd.DataFrame:
     missing = [c for c in PRICE_COLUMNS if c not in df.columns]
     if missing:
         log.warning("[%s] missing columns %s — skipping", symbol, missing)
-        return empty_price_frame()
+        return empty_price_frame(intraday=intraday)
 
     df = df[list(PRICE_COLUMNS)]
 
     idx = pd.to_datetime(df.index, errors="coerce")
-    if getattr(idx, "tz", None) is not None:
-        idx = idx.tz_convert(None)
-    # Pin the resolution: pandas infers us/ns depending on the input, and a
-    # mixed-unit index breaks the join against the macro panel downstream.
-    df.index = pd.DatetimeIndex(idx).normalize().as_unit("ns")
-    df.index.name = "date"
+    if intraday:
+        # Localise naive input to UTC; convert anything tz-aware to UTC.
+        idx = (idx.tz_localize("UTC") if getattr(idx, "tz", None) is None
+               else idx.tz_convert("UTC"))
+        df.index = pd.DatetimeIndex(idx).as_unit("ns")
+        df.index.name = "timestamp"
+    else:
+        if getattr(idx, "tz", None) is not None:
+            idx = idx.tz_convert(None)
+        # Pin the resolution: pandas infers us/ns depending on the input, and a
+        # mixed-unit index breaks the join against the macro panel downstream.
+        df.index = pd.DatetimeIndex(idx).normalize().as_unit("ns")
+        df.index.name = "date"
 
     df = df[df.index.notna()]
     df = df.dropna(subset=["close"])
     df = df[~df.index.duplicated(keep="last")].sort_index()
     if df.empty:
-        return empty_price_frame()
+        return empty_price_frame(intraday=intraday)
 
     for col in ("open", "high", "low", "close", "adj_close"):
         df[col] = pd.to_numeric(df[col], errors="coerce").astype("float64")

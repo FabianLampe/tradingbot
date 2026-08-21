@@ -43,12 +43,17 @@ src/
 │   ├── universe.py         # S&P-500-Liste (Wikipedia, gecacht) + ETF-Universum
 │   ├── prices.py           # OHLCV via yfinance (Cache wird gemerged, nie ersetzt)
 │   ├── macro.py            # FRED-Panel (mit Publikations-Lag gegen Leakage)
+│   ├── intraday.py         # Stundenbalken (yfinance, ~2 Jahre Historie)
 │   ├── news.py             # Company-News (Finnhub, Fallback Alpha Vantage)
 │   ├── rss_news.py         # Markt-News aus den Whitelist-RSS-Feeds
 │   └── social.py           # Reddit (kuratierte Subreddits)
 ├── features/               # Returns, Korrelationen, TA, FinBERT-Sentiment
 ├── model/                  # XGBoost-Predictor, Walk-Forward-Backtest, Trade Journal
+│   └── costs.py            # Spread/Slippage/Gebühren — in Euro, nicht in bps
+├── execution/
+│   └── paper.py            # Paper-Broker: echte Kurse, echte Kosten, kein Geld
 ├── runtime/                # Daily/Pre-Market Orchestrator
+│   └── events.py           # Ereignisgetriebene Signale statt festem Takt
 ├── explain/                # SHAP-Attribution + LLM-Postmortem
 └── knowledge/              # SEC EDGAR + Chroma RAG
 
@@ -78,7 +83,10 @@ config/
 | `python scripts/run_daily.py --universe etfs` | EOD-Pipeline (Daten, Training, Empfehlungen) |
 | `python scripts/run_premarket.py` | Overnight-News-Anpassung |
 | `python scripts/run_backtest.py --universe etfs` | Walk-Forward-Backtest (inkl. Alpha/IR gegen S&P 500) |
+| `python scripts/run_backtest.py --initial 1200 --cost-preset neobroker_1eur` | Backtest mit realistischen Kosten für dein echtes Kapital |
 | `python scripts/run_backtest.py --no-cross-sectional` | Backtest auf Feature-Rohwerten statt Tagesrängen |
+| `python scripts/run_paper.py --refresh --replay 45` | Ereignisgetriebenes Paper-Trading auf Stundenbalken |
+| `python scripts/run_paper.py --report` | Stand des Paper-Depots |
 | `python scripts/run_postmortems.py --limit 10` | LLM analysiert die letzten 10 Fehltrades |
 | `python scripts/ingest_news.py --symbols AAPL,MSFT --days-back 90` | News-Backfill pro Ticker |
 | `python scripts/ingest_news.py --rss --reddit` | Markt-RSS + Reddit einmalig ziehen |

@@ -14,6 +14,7 @@ import config
 from src.data import prices, universe
 from src.features import build_dataset
 from src.model import backtest as bt_mod
+from src.model import costs as cost_mod
 from src.model.predictor import Predictor
 from src.storage import db
 
@@ -24,7 +25,12 @@ def main():
     p.add_argument("--horizon", type=int, default=5)
     p.add_argument("--top-n-long", type=int, default=10)
     p.add_argument("--top-n-short", type=int, default=0)
-    p.add_argument("--cost-bps", type=float, default=5.0)
+    p.add_argument("--cost-bps", type=float, default=5.0,
+                   help="Flat per-side cost; ignored unless --cost-preset=flat")
+    p.add_argument("--cost-preset", default="neobroker_1eur",
+                   choices=sorted(cost_mod.PRESETS) + ["flat"],
+                   help="Realistic cost model. 'flat' restores the old "
+                        "--cost-bps behaviour.")
     p.add_argument("--leverage", type=float, default=1.0)
     p.add_argument("--initial", type=float, default=100_000.0)
     p.add_argument("--no-cross-sectional", action="store_true",
@@ -58,12 +64,21 @@ def main():
         return
 
     feature_cols = build_dataset.feature_columns(dataset)
+    model = None if args.cost_preset == "flat" else cost_mod.get_preset(args.cost_preset)
+    n_pos = args.top_n_long + args.top_n_short
+    if model is not None:
+        print()
+        print(cost_mod.format_viability(model, n_positions=max(n_pos, 1),
+                                        holding_days=args.horizon))
+        print()
+
     config_bt = bt_mod.BacktestConfig(
         horizon_days=args.horizon,
         rebalance_days=args.horizon,
         top_n_long=args.top_n_long,
         top_n_short=args.top_n_short,
         cost_bps=args.cost_bps,
+        cost_model=model,
         leverage=args.leverage,
         initial_capital=args.initial,
     )
@@ -96,6 +111,14 @@ def main():
         "mean_pnl_per_trade", "total_return", "annualised_return",
         "sharpe", "max_drawdown", "calmar",
     ])
+    _show("COSTS", [
+        "cost_model", "avg_position_size", "avg_round_trip_cost",
+        "gross_total_return", "gross_annualised_return", "cost_drag_annualised",
+    ])
+    if result.metrics.get("ruined"):
+        print(f"\n  [!] RUINED on {result.metrics['ruin_date']} after "
+              f"{result.metrics['survived_years']:.1f} years.")
+        print(f"      {result.metrics['ruin_note']}")
     _show("VS BENCHMARK", [
         "benchmark_symbol", "benchmark_periods", "benchmark_total_return",
         "benchmark_annualised_return", "benchmark_sharpe",

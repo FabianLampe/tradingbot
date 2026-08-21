@@ -16,14 +16,17 @@ load_dotenv(PROJECT_ROOT / ".env")
 # ---- Storage paths ----
 DATA_DIR = Path(os.getenv("DATA_DIR", PROJECT_ROOT / "data")).resolve()
 PRICES_DIR = DATA_DIR / "prices"
+INTRADAY_DIR = DATA_DIR / "prices_intraday"
 NEWS_DIR = DATA_DIR / "news"
 MACRO_DIR = DATA_DIR / "macro"
 META_DIR = DATA_DIR / "meta"
 MODELS_DIR = DATA_DIR / "models"
 JOURNAL_DIR = DATA_DIR / "journal"
+PAPER_DIR = DATA_DIR / "paper"
 CONFIG_DIR = PROJECT_ROOT / "config"
 
-for d in (PRICES_DIR, NEWS_DIR, MACRO_DIR, META_DIR, MODELS_DIR, JOURNAL_DIR):
+for d in (PRICES_DIR, INTRADAY_DIR, NEWS_DIR, MACRO_DIR, META_DIR,
+          MODELS_DIR, JOURNAL_DIR, PAPER_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 
