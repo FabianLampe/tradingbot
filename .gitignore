@@ -3,7 +3,9 @@
 .env.local
 
 # data (never commit downloaded market data)
-data/
+# Leading slash: only the top-level cache — `data/` alone would also
+# swallow the src/data/ ingestion package.
+/data/
 *.parquet
 *.db
 *.sqlite

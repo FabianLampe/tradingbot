@@ -40,6 +40,9 @@ data/                       # Parquet-Cache, Modelle, Journal — niemals commit
 
 src/
 ├── data/                   # Ingestion: yfinance, Finnhub, FRED, Reddit, RSS
+│   ├── news.py             # Company-News (Finnhub, Fallback Alpha Vantage)
+│   ├── rss_news.py         # Markt-News aus den Whitelist-RSS-Feeds
+│   └── social.py           # Reddit (kuratierte Subreddits)
 ├── features/               # Returns, Korrelationen, TA, FinBERT-Sentiment
 ├── model/                  # XGBoost-Predictor, Walk-Forward-Backtest, Trade Journal
 ├── runtime/                # Daily/Pre-Market Orchestrator
@@ -55,6 +58,7 @@ scripts/
 ├── run_premarket.py        # Pre-Market Adjustment
 ├── run_backtest.py         # Walk-Forward Backtest
 ├── run_postmortems.py      # LLM-Analyse Fehltrades
+├── ingest_news.py          # News-Backfill in den Parquet-Cache
 ├── ingest_edgar.py         # SEC EDGAR -> RAG
 └── scheduler.py            # APScheduler-Daemon
 
@@ -72,6 +76,8 @@ config/
 | `python scripts/run_premarket.py` | Overnight-News-Anpassung |
 | `python scripts/run_backtest.py --universe etfs` | Walk-Forward-Backtest |
 | `python scripts/run_postmortems.py --limit 10` | LLM analysiert die letzten 10 Fehltrades |
+| `python scripts/ingest_news.py --symbols AAPL,MSFT --days-back 90` | News-Backfill pro Ticker |
+| `python scripts/ingest_news.py --rss --reddit` | Markt-RSS + Reddit einmalig ziehen |
 | `python scripts/ingest_edgar.py --universe sp500` | SEC-Filings in RAG einbetten |
 | `streamlit run app/dashboard.py` | Dashboard auf :8501 |
 | `python -m app.telegram_bot` | Telegram-Bot Listener |
@@ -92,6 +98,7 @@ Siehe **[DEPLOY.md](DEPLOY.md)** — Docker-Compose-Setup mit drei Services
 |---|---|
 | API-Keys | `.env` |
 | Quellen-Whitelist (Twitter/Reddit/News) | `config/whitelist.yaml` |
+| RSS-Feed-URLs pro Outlet | `config/whitelist.yaml` `rss_feeds:` |
 | Trading-Parameter (Top-N, Kosten, Hebel) | `scripts/run_*.py` Args |
 | Modell-Hyperparameter | `src/model/predictor.py` `Predictor.params` |
 | Pipeline-Reihenfolge | `src/runtime/daily.py` |

@@ -55,3 +55,38 @@ news_outlets_blacklist:
   - benzinga.com       # often algorithmic, low signal
   - zacks.com          # template articles
   # Add: any outlet that produces near-identical articles for many tickers
+
+# RSS-Feed-URLs pro Outlet (src/data/rss_news.py).
+# Nur Domains aus `news_outlets` werden abgerufen. Fehlt eine Domain hier,
+# greift die eingebaute Default-Map in rss_news.DEFAULT_FEEDS. Feed umgezogen
+# oder tot? -> hier überschreiben, kein Code-Change nötig.
+rss_feeds:
+  reuters.com:
+    - https://www.reutersagency.com/feed/?best-topics=business-finance&post_type=best
+  bloomberg.com:
+    - https://feeds.bloomberg.com/markets/news.rss
+  ft.com:
+    - https://www.ft.com/rss/home
+  wsj.com:
+    - https://feeds.a.dj.com/rss/RSSMarketsMain.xml
+  economist.com:
+    - https://www.economist.com/finance-and-economics/rss.xml
+  marketwatch.com:
+    - https://feeds.content.dowjones.io/public/rss/mw_topstories
+  cnbc.com:
+    - https://www.cnbc.com/id/100003114/device/rss/rss.html   # Top News
+    - https://www.cnbc.com/id/20910258/device/rss/rss.html    # Markets
+  finance.yahoo.com:
+    - https://finance.yahoo.com/news/rssindex
+  seekingalpha.com:
+    - https://seekingalpha.com/market_currents.xml
+  barrons.com:
+    - https://feeds.a.dj.com/rss/RSSBarronsMarketsMain.xml
+  sec.gov:
+    - https://www.sec.gov/news/pressreleases.rss
+  federalreserve.gov:
+    - https://www.federalreserve.gov/feeds/press_all.xml
+  bls.gov:
+    - https://www.bls.gov/feed/bls_latest.rss
+  bea.gov:
+    - https://www.bea.gov/rss.xml

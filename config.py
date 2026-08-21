@@ -39,6 +39,9 @@ def load_whitelist() -> dict:
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY") or None
 FRED_API_KEY = os.getenv("FRED_API_KEY") or None
 ALPHAVANTAGE_API_KEY = os.getenv("ALPHAVANTAGE_API_KEY") or None
+REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID") or None
+REDDIT_CLIENT_SECRET = os.getenv("REDDIT_CLIENT_SECRET") or None
+REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT") or "trading-bot/0.1"
 
 # ---- Defaults ----
 # History depth for initial S&P 500 download. 15y is enough to span
